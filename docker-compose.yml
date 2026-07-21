@@ -1,0 +1,7 @@
+services:
+  ingestion:
+    build:
+      context: .
+      dockerfile: ingestion/Dockerfile
+    env_file: .env
+    restart: unless-stopped
