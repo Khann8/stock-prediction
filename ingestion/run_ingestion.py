@@ -1,15 +1,31 @@
 #!/usr/bin/env python3
-"""Ingest recent Yahoo Finance OHLCV data into Supabase Postgres."""
+"""Ingest Yahoo Finance OHLCV data and technical indicators into Supabase."""
 
 import logging
 import sys
+from datetime import timedelta
 from pathlib import Path
 
 import yaml
 
-from config import DATABASE_URL, INGESTION_LOOKBACK_DAYS, TICKERS_CONFIG_PATH
-from db import ensure_stock, get_engine, log_ingestion, upsert_daily_prices
-from fetcher import fetch_daily_prices
+from config import (
+    DATABASE_URL,
+    INDICATOR_WARMUP_DAYS,
+    INGESTION_INITIAL_BACKFILL_YEARS,
+    TICKERS_CONFIG_PATH,
+)
+from db import (
+    ensure_stock,
+    get_daily_prices,
+    get_engine,
+    get_last_price_date,
+    indicator_history_start,
+    log_ingestion,
+    upsert_daily_prices,
+    upsert_indicators,
+)
+from fetcher import fetch_incremental, fetch_initial_backfill
+from indicators import compute_indicators
 
 logging.basicConfig(
     level=logging.INFO,
@@ -32,18 +48,60 @@ def load_tickers(config_path: Path) -> list[str]:
     return [str(ticker).upper() for ticker in tickers]
 
 
-def ingest_ticker(engine, ticker: str, lookback_days: int) -> tuple[str, int]:
+def refresh_indicators(
+    engine,
+    ticker: str,
+    update_from,
+    warmup_days: int,
+) -> int:
+    history_start = indicator_history_start(update_from, warmup_days)
+    price_rows = get_daily_prices(engine, ticker, history_start)
+    indicator_rows = compute_indicators(price_rows)
+    rows_to_store = [row for row in indicator_rows if row["date"] >= update_from]
+    return upsert_indicators(engine, rows_to_store)
+
+
+def ingest_ticker(
+    engine,
+    ticker: str,
+    backfill_years: int,
+    warmup_days: int,
+) -> tuple[int, int, str]:
     ensure_stock(engine, ticker)
-    rows = fetch_daily_prices(ticker, lookback_days)
-    count = upsert_daily_prices(engine, rows)
-    log_ingestion(engine, ticker, "success", count)
-    return ticker, count
+    last_date = get_last_price_date(engine, ticker)
+
+    if last_date is None:
+        mode = "backfill"
+        price_rows = fetch_initial_backfill(ticker, backfill_years)
+        if not price_rows:
+            raise ValueError(f"No price data returned for {ticker}")
+        indicator_update_from = min(row["date"] for row in price_rows)
+    else:
+        mode = "incremental"
+        price_rows = fetch_incremental(ticker, last_date)
+        indicator_update_from = last_date + timedelta(days=1)
+
+    price_count = upsert_daily_prices(engine, price_rows)
+
+    if price_count == 0:
+        logger.info("%s is already up to date (last date: %s)", ticker, last_date)
+        log_ingestion(engine, ticker, "success", 0)
+        return 0, 0, mode
+
+    indicator_count = refresh_indicators(
+        engine,
+        ticker,
+        indicator_update_from,
+        warmup_days,
+    )
+    log_ingestion(engine, ticker, "success", price_count)
+    return price_count, indicator_count, mode
 
 
 def run() -> int:
     logger.info(
-        "Starting ingestion (lookback_days=%s, config=%s)",
-        INGESTION_LOOKBACK_DAYS,
+        "Starting ingestion (backfill_years=%s, config=%s)",
+        INGESTION_INITIAL_BACKFILL_YEARS,
         TICKERS_CONFIG_PATH,
     )
 
@@ -55,8 +113,19 @@ def run() -> int:
 
     for ticker in tickers:
         try:
-            _, count = ingest_ticker(engine, ticker, INGESTION_LOOKBACK_DAYS)
-            logger.info("Ingested %s rows for %s", count, ticker)
+            price_count, indicator_count, mode = ingest_ticker(
+                engine,
+                ticker,
+                INGESTION_INITIAL_BACKFILL_YEARS,
+                INDICATOR_WARMUP_DAYS,
+            )
+            logger.info(
+                "Ingested %s price rows and %s indicator rows for %s (%s mode)",
+                price_count,
+                indicator_count,
+                ticker,
+                mode,
+            )
             successes += 1
         except Exception as exc:
             failures += 1

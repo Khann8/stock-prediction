@@ -7,15 +7,18 @@ import pandas as pd
 import yfinance as yf
 
 
-def fetch_daily_prices(ticker: str, lookback_days: int) -> list[dict[str, Any]]:
-    """Return daily OHLCV rows for the last `lookback_days` calendar days."""
-    end = date.today() + timedelta(days=1)
-    start = end - timedelta(days=lookback_days)
+def fetch_daily_prices_range(
+    ticker: str,
+    start: date,
+    end: date | None = None,
+) -> list[dict[str, Any]]:
+    """Return daily OHLCV rows for [start, end)."""
+    fetch_end = end or (date.today() + timedelta(days=1))
 
     df = yf.download(
         ticker,
         start=start.isoformat(),
-        end=end.isoformat(),
+        end=fetch_end.isoformat(),
         auto_adjust=False,
         progress=False,
     )
@@ -43,6 +46,22 @@ def fetch_daily_prices(ticker: str, lookback_days: int) -> list[dict[str, Any]]:
         )
 
     return rows
+
+
+def fetch_initial_backfill(ticker: str, years: int) -> list[dict[str, Any]]:
+    """Fetch full history for a ticker's first ingestion run."""
+    end = date.today() + timedelta(days=1)
+    start = end - timedelta(days=years * 365)
+    return fetch_daily_prices_range(ticker, start, end)
+
+
+def fetch_incremental(ticker: str, since: date) -> list[dict[str, Any]]:
+    """Fetch only rows newer than the last stored date."""
+    start = since + timedelta(days=1)
+    end = date.today() + timedelta(days=1)
+    if start >= end:
+        return []
+    return fetch_daily_prices_range(ticker, start, end)
 
 
 def _normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
