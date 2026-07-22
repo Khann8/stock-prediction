@@ -1,7 +1,19 @@
 """Fetch OHLCV data from Yahoo Finance via yfinance."""
 
+import os
+import sys
 from datetime import date, timedelta
 from typing import Any
+
+import certifi
+
+# curl_cffi cannot verify Yahoo TLS on many Windows installs; requests + certifi does.
+_ca_bundle = certifi.where()
+os.environ.setdefault("SSL_CERT_FILE", _ca_bundle)
+os.environ.setdefault("REQUESTS_CA_BUNDLE", _ca_bundle)
+os.environ.setdefault("CURL_CA_BUNDLE", _ca_bundle)
+if sys.platform == "win32":
+    os.environ.setdefault("YF_DISABLE_CURL_CFFI", "1")
 
 import pandas as pd
 import yfinance as yf

@@ -5,3 +5,28 @@ services:
       dockerfile: ingestion/Dockerfile
     env_file: .env
     restart: unless-stopped
+
+  mlflow:
+    build:
+      context: .
+      dockerfile: mlflow/Dockerfile
+    ports:
+      - "5000:5000"
+    volumes:
+      - mlflow-data:/mlflow
+    restart: unless-stopped
+
+  models:
+    build:
+      context: .
+      dockerfile: models/Dockerfile
+    env_file: .env
+    environment:
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+    depends_on:
+      - mlflow
+    profiles:
+      - train
+
+volumes:
+  mlflow-data:
